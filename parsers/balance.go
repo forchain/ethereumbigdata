@@ -1,23 +1,20 @@
 package parsers
 
 import (
-	"github.com/piotrnar/gocoin/lib/btc"
-	"bytes"
 	"fmt"
-	"io/ioutil"
 	"sync"
 	"os"
 	"log"
-	"compress/gzip"
 	"strconv"
 	"strings"
-	"sort"
 	"runtime"
 	"time"
 	"github.com/forchain/ethereumbigdata/lib"
 	"net/http"
 	"github.com/forchain/ethrpc"
 	"math/big"
+	"io/ioutil"
+	"encoding/json"
 )
 
 const (
@@ -32,24 +29,6 @@ type tAccount struct {
 }
 
 type tAccountMap map[string]tAccount
-
-type tOutput struct {
-	addr string // index
-	val  uint64 // val
-}
-
-//  (index -> output)
-type tOutputMap map[uint16]tOutput
-
-// tx -> tOutputMap
-type tUnspentMap map[btc.Uint256]tOutputMap
-
-type tChangeSet struct {
-	sumOut     uint64
-	spentMap   map[btc.Uint256][]uint16
-	balanceMap map[btc.Uint256]tOutputMap
-	block      *btc.Block
-}
 
 type tBalanceChange struct {
 	addr   string
@@ -70,22 +49,20 @@ type BalanceParser struct {
 	fileNO_ int
 	outDir_ string
 
-	unspentMap_ tUnspentMap
 	accountMap_ tAccountMap
 
 	reduceNum_ uint32
-	reduceSum_ uint64
+	reduceSum_ float64
 
 	reduceNum2010_ uint32
-	reduceSum2010_ uint64
+	reduceSum2010_ float64
 
 	reduceNum2014_ uint32
-	reduceSum2014_ uint64
+	reduceSum2014_ float64
 
 	unspentMapLock_ *sync.RWMutex
 	balanceMapLock_ *sync.RWMutex
 
-	changeSetCh_     chan *tChangeSet
 	balanceChangeCh_ chan *tBalanceChange
 	balanceReadyCh_  chan bool
 
@@ -101,7 +78,8 @@ type BalanceParser struct {
 	sumFee_      float64
 	rewardFeeCh_ chan *tRewardFee
 
-	unit_ *big.Int
+	unit_    *big.Int
+	genesis_ tGenesis
 }
 
 func (_b *BalanceParser) loadBlock(_blockNO int, _wg *sync.WaitGroup) {
@@ -115,12 +93,40 @@ func (_b *BalanceParser) loadBlock(_blockNO int, _wg *sync.WaitGroup) {
 	_b.blockCh_ <- block
 }
 
+type tGenesis map[string]map[string]string
+
+func (_b *BalanceParser) loadGenesis() {
+	pwd, _ := os.Getwd()
+	raw, err := ioutil.ReadFile(pwd + "/data/genesis_block.json")
+	if err != nil {
+		log.Fatalln("LoadGenesis ReadFile", err)
+	}
+	_b.genesis_ = make(tGenesis)
+	err = json.Unmarshal(raw, &_b.genesis_)
+	if err != nil {
+		log.Fatalln("LoadGenesis Unmarshal", err)
+	}
+
+	for addr, balance := range _b.genesis_ {
+		wei := new(big.Float)
+		wei.SetString(balance["wei"])
+		eth := new(big.Float)
+		eth.Quo(wei, big.NewFloat(1e18))
+
+		fEth, _ := eth.Float64()
+		_b.accountMap_["0x"+addr] = tAccount{fEth, 0}
+	}
+	log.Println("loadGenesis", len(_b.accountMap_))
+}
+
 func (_b *BalanceParser) Init(_rpc string, _out string) {
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 10000
 
 	_b.rpc_ = ethrpc.NewEthRPC("http://" + _rpc)
 
 	_b.outDir_ = _out
+	os.RemoveAll(_out)
+	os.Mkdir(_out, os.ModePerm)
 
 	_b.cpuNum_ = runtime.NumCPU()
 	_b.blockCh_ = make(chan *ethrpc.Block, _b.cpuNum_)
@@ -133,6 +139,8 @@ func (_b *BalanceParser) Init(_rpc string, _out string) {
 
 	_b.unit_ = new(big.Int)
 	_b.unit_.SetUint64(ETH_UNIT)
+
+	_b.loadGenesis()
 
 	var err error
 	if num, err := _b.rpc_.EthBlockNumber(); err != nil || num == 0 {
@@ -173,35 +181,6 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	wgBlock.Wait()
 }
 
-func (_b *BalanceParser) saveUnspent(_wg *sync.WaitGroup, _path string) {
-	defer _wg.Done()
-	fileName := fmt.Sprintf("%v/unspent.gz", _path)
-
-	b := new(bytes.Buffer)
-	w, err := gzip.NewWriterLevel(b, gzip.BestSpeed)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	bb := new(bytes.Buffer)
-	for tx, outputs := range _b.unspentMap_ {
-		bb.WriteString(tx.String())
-		for i, o := range outputs {
-			l := fmt.Sprintf(",%v %v %v", i, o.addr, o.val)
-			bb.WriteString(l)
-		}
-		bb.WriteByte('\n')
-		w.Write([]byte(bb.Bytes()))
-		bb.Reset()
-	}
-
-	w.Close()
-	if err := ioutil.WriteFile(fileName, b.Bytes(), 0666); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("saved", fileName)
-}
-
 type tSortedBalance []string
 
 func (s tSortedBalance) Len() int {
@@ -223,63 +202,6 @@ func (s tSortedBalance) Less(i, j int) bool {
 	}
 
 	return len(s[i]) < len(s[j])
-}
-
-func (_b *BalanceParser) saveBalance(_wg *sync.WaitGroup, _path string) {
-	defer _wg.Done()
-
-	fileName := fmt.Sprintf("%v/balance.gz", _path)
-
-	b := new(bytes.Buffer)
-	w, err := gzip.NewWriterLevel(b, gzip.BestSpeed)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// if OOM, try delete map item then append to list
-	sorted := make(tSortedBalance, 0)
-
-	for k, v := range _b.accountMap_ {
-		line := fmt.Sprintln(k, v.balance)
-		sorted = append(sorted, line)
-	}
-	sort.Sort(sorted)
-	for _, v := range sorted {
-		w.Write([]byte(v))
-	}
-
-	w.Close()
-	if err := ioutil.WriteFile(fileName, b.Bytes(), 0666); err != nil {
-		log.Fatal(err)
-	}
-	log.Println("saved", fileName)
-}
-
-func (_b *BalanceParser) saveMap(_files uint32) {
-	wg := new(sync.WaitGroup)
-	wg.Add(2)
-
-	path := fmt.Sprintf("%v/%v.%v", _b.outDir_, _files, _b.blockNum_)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		os.Mkdir(path, os.ModePerm)
-	}
-
-	go _b.saveBalance(wg, path)
-	go _b.saveUnspent(wg, path)
-
-	wg.Wait()
-}
-
-func FakeAddr(_script []byte) string {
-	hash := make([]byte, 20)
-	btc.RimpHash(_script, hash)
-
-	var ad [25]byte
-	copy(ad[1:21], hash)
-	sh := btc.Sha2Sum(ad[0:21])
-	copy(ad[21:25], sh[:4])
-	addr58 := btc.Encodeb58(ad[:])
-	return addr58
 }
 
 func (_b *BalanceParser) saveDayReport(_days uint32) {
@@ -426,21 +348,21 @@ func (_b *BalanceParser) processBalance(_blockTime *time.Time) {
 		}
 
 		balance := account.balance
-		if balance >= 1000*1e8 && change.change < 0 && _blockTime != nil {
+		if balance >= 1000 && change.change < 0 && _blockTime != nil {
 			delta := time.Now().Sub(*_blockTime)
 			days := uint32(delta.Hours() / 24)
 			if days <= 720 {
 				_b.reduceNum_ += 1
-				_b.reduceSum_ += uint64(-change.change)
+				_b.reduceSum_ += -change.change
 
 				t := time.Unix(int64(account.time), 0)
 				if t.Year() <= 2010 {
 					_b.reduceNum2010_ += 1
-					_b.reduceSum2010_ += uint64(-change.change)
+					_b.reduceSum2010_ += -change.change
 
 				} else if t.Year() <= 2014 {
 					_b.reduceNum2014_ += 1
-					_b.reduceSum2014_ += uint64(-change.change)
+					_b.reduceSum2014_ += -change.change
 				}
 			}
 		}
@@ -473,10 +395,10 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 	for {
 		if block, ok := _b.blockMap_[_b.blockNO_]; ok {
 			reward := 0.0
-			if _b.blockNO_ > REDUCE_BLOCK_NO {
-				reward = 5
-			} else {
+			if _b.blockNO_ >= REDUCE_BLOCK_NO {
 				reward = 3
+			} else {
+				reward = 5
 			}
 
 			fee := 0.0
@@ -487,7 +409,7 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 
 				val := convertPrice(&t.Value)
 
-				_b.balanceChangeCh_ <- &tBalanceChange{t.From, val + txFee, block.Timestamp}
+				_b.balanceChangeCh_ <- &tBalanceChange{t.From, -val - txFee, block.Timestamp}
 
 				_b.balanceChangeCh_ <- &tBalanceChange{t.To, val, block.Timestamp}
 			}
@@ -497,7 +419,7 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward, block.Timestamp}
 
 			blockTime := time.Unix(int64(block.Timestamp), 0)
-			if blockTime.Day() != lastLogTime.Day() {
+			if blockTime.Day() != lastLogTime.Day() && !lastLogTime.IsZero() {
 				close(_b.balanceChangeCh_)
 				<-_b.balanceReadyCh_
 
