@@ -419,7 +419,7 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward, block.Timestamp}
 
 			blockTime := time.Unix(int64(block.Timestamp), 0)
-			if blockTime.Day() != lastLogTime.Day() && !lastLogTime.IsZero() {
+			if blockTime.Day() != lastLogTime.Day() && _b.blockNO_ > 1 {
 				close(_b.balanceChangeCh_)
 				<-_b.balanceReadyCh_
 
@@ -439,11 +439,12 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 					_b.sumFee_ = 0
 					_b.sumReward_ = 0
 				}
-				lastLogTime = &blockTime
 
 				_b.balanceChangeCh_ = make(chan *tBalanceChange)
 				go _b.processBalance(&blockTime)
 			}
+
+			lastLogTime = &blockTime
 
 			delete(_b.blockMap_, _b.blockNO_)
 
