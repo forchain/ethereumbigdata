@@ -121,6 +121,7 @@ func (_b *BalanceParser) Init(_rpc string, _out string) {
 	_b.sumReward_ = big.NewInt(0)
 	_b.sumFee_ = big.NewInt(0)
 	_b.reduceSumICO_ = big.NewInt(0)
+	_b.reduceSum_ = big.NewInt(0)
 
 	_b.loadGenesis()
 
