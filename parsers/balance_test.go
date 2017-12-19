@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"math/big"
+	"fmt"
 )
 
 func TestBalanceParser_loadGenesis(t *testing.T) {
@@ -46,4 +47,22 @@ func TestBalanceParser_loadGenesisBigInt(t *testing.T) {
 	log.Println("loadGenesis", sum.String())
 	log.Print(len(genesis))
 
+}
+
+func recoverTest(){
+	throw()
+}
+
+func throw()  {
+	panic("underflow")
+}
+
+func TestRecover(t *testing.T) {
+	defer func () {
+		if err := recover(); err != nil {
+			fmt.Println(err)
+		}
+	}()
+
+	recoverTest()
 }

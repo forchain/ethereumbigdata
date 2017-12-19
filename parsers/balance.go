@@ -332,12 +332,25 @@ func (_b *BalanceParser) processFee() {
 }
 
 func (_b *BalanceParser) processBalance(_blockTime *time.Time) {
+	debugBalance := big.NewInt(0)
+	debugChange := big.NewInt(0)
+
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println(err, debugBalance.String(), debugChange.String())
+		}
+	}()
+
+
 	for change := range _b.balanceChangeCh_ {
 		balance, ok := _b.balanceMap_[change.addr]
 		if !ok {
 			balance = big.NewInt(0)
 			_b.balanceMap_[change.addr] = balance
 		}
+
+		debugChange = change.change
+		debugBalance = balance
 
 		rich := big.NewInt(0)
 		rich.Mul(big.NewInt(ETH_UNIT), big.NewInt(10000))
@@ -373,7 +386,11 @@ func (_b *BalanceParser) processBalance(_blockTime *time.Time) {
 		//	b.Add(balance, change.change)
 		//	balance.Set(b)
 		//}
-		balance.Set(big.NewInt(0).Add(balance, change.change))
+
+		newBalance := big.NewInt(0)
+		newBalance.Add(balance, change.change)
+
+		balance.Set(newBalance)
 
 		if balance.Sign() == 0 {
 			delete(_b.balanceMap_, change.addr)
