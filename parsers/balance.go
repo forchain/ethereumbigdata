@@ -25,12 +25,12 @@ const (
 
 type tBalanceChange struct {
 	addr   string
-	change *big.Int
+	change float64
 }
 
 type tRewardFee struct {
-	reward *big.Int
-	fee    *big.Int
+	reward float64
+	fee    float64
 }
 
 type BalanceParser struct {
@@ -41,13 +41,13 @@ type BalanceParser struct {
 	fileNO_ int
 	outDir_ string
 
-	balanceMap_ map[string]*big.Int
+	balanceMap_ map[string]float64
 
 	reduceNum_ uint32
-	reduceSum_ *big.Int
+	reduceSum_ float64
 
 	reduceNumICO_ uint32
-	reduceSumICO_ *big.Int
+	reduceSumICO_ float64
 
 	balanceChangeCh_ chan *tBalanceChange
 	balanceReadyCh_  chan bool
@@ -57,8 +57,8 @@ type BalanceParser struct {
 	blockMap_ map[int]*ethrpc.Block
 
 	blockNO_     int
-	sumReward_   *big.Int
-	sumFee_      *big.Int
+	sumReward_   float64
+	sumFee_      float64
 	rewardFeeCh_ chan *tRewardFee
 
 	genesis_ tGenesis
@@ -89,15 +89,16 @@ func (_b *BalanceParser) loadGenesis() {
 		log.Fatalln("LoadGenesis Unmarshal", err)
 	}
 
-	sum := big.NewInt(0)
+	sum := 0.0
 	for addr, balance := range _b.genesis_ {
-		wei := big.NewInt(0)
-		wei.SetString(balance["wei"], 10)
-		_b.balanceMap_["0x"+addr] = wei
-		sum.Add(sum, wei)
+		wei, _ := big.NewFloat(0).SetString(balance["wei"])
+		wei.Quo(wei, big.NewFloat(ETH_UNIT))
+		eth, _ := wei.Float64()
+		_b.balanceMap_["0x"+addr] = eth
+		sum += eth
 	}
 	// Genesis (60M Crowdsale+12M Other):	72,009,990.50 Ether
-	log.Println("loadGenesis", len(_b.balanceMap_), sum.String())
+	log.Println("loadGenesis", len(_b.balanceMap_), sum)
 }
 
 func (_b *BalanceParser) Init(_rpc string, _out string) {
@@ -112,16 +113,16 @@ func (_b *BalanceParser) Init(_rpc string, _out string) {
 	_b.cpuNum_ = runtime.NumCPU()
 	_b.blockCh_ = make(chan *ethrpc.Block, _b.cpuNum_)
 	_b.blockMap_ = make(map[int]*ethrpc.Block)
-	_b.balanceMap_ = make(map[string]*big.Int)
+	_b.balanceMap_ = make(map[string]float64)
 
 	_b.balanceChangeCh_ = make(chan *tBalanceChange, _b.cpuNum_)
 	_b.balanceReadyCh_ = make(chan bool)
 	_b.rewardFeeCh_ = make(chan *tRewardFee, _b.cpuNum_)
 
-	_b.sumReward_ = big.NewInt(0)
-	_b.sumFee_ = big.NewInt(0)
-	_b.reduceSumICO_ = big.NewInt(0)
-	_b.reduceSum_ = big.NewInt(0)
+	_b.sumReward_ = 0.0
+	_b.sumFee_ = 0.0
+	_b.reduceSumICO_ = 0.0
+	_b.reduceSum_ = 0.0
 
 	_b.loadGenesis()
 
@@ -250,11 +251,11 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 	topList := new(lib.TopList)
 	topList.Init(100000)
 	balanceNum := len(_b.balanceMap_)
-	balanceSum := big.NewInt(0)
+	balanceSum := 0.0
 	for _, v := range _b.balanceMap_ {
-		if v.Sign() > 0 {
-			balanceSum.Add(big.NewInt(0).Set(balanceSum), v)
+		if v > 0 {
 			topList.Push(v)
+			balanceSum += v
 		} else {
 			balanceNum -= 1
 		}
@@ -266,32 +267,23 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 	log.Println("[ALL]", line)
 
 	top := topList.Sorted()
-	sum := big.NewInt(0)
+	sum := 0.0
 	for k, v := range top {
-		sum.Add(sum, v)
+		sum += v
 		if k == 99 {
-			fSum := big.NewFloat(0).SetInt(sum)
-			fBalance := big.NewFloat(0).SetInt(balanceSum)
-			quo := big.NewFloat(0).Quo(fSum, fBalance)
-			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum.String(), quo.String())
+			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum, sum/balanceSum)
 			if _, err = f100.WriteString(line); err != nil {
 				log.Fatalln(err, line)
 			}
 			log.Println("[100]", line)
 		} else if k == 999 {
-			fSum := big.NewFloat(0).SetInt(sum)
-			fBalance := big.NewFloat(0).SetInt(balanceSum)
-			quo := big.NewFloat(0).Quo(fSum, fBalance)
-			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum.String(), quo.String())
+			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum, sum/balanceSum)
 			if _, err = f1000.WriteString(line); err != nil {
 				log.Fatalln(err, line)
 			}
 			log.Println("[1000]", line)
 		} else if k == 9999 {
-			fSum := big.NewFloat(0).SetInt(sum)
-			fBalance := big.NewFloat(0).SetInt(balanceSum)
-			quo := big.NewFloat(0).Quo(fSum, fBalance)
-			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum.String(), quo.String())
+			line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum, sum/balanceSum)
 			if _, err = f10000.WriteString(line); err != nil {
 				log.Fatalln(err, line)
 			}
@@ -299,11 +291,7 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 		}
 	}
 	if len(top) >= 100000 {
-		fSum := big.NewFloat(0).SetInt(sum)
-		fBalance := big.NewFloat(0).SetInt(balanceSum)
-		quo := big.NewFloat(0).Quo(fSum, fBalance)
-
-		line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum.String(), quo.String())
+		line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), sum, sum/balanceSum)
 		if _, err = f100000.WriteString(line); err != nil {
 			log.Fatalln(err, line)
 		}
@@ -317,7 +305,7 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 	}
 	defer fReward.Close()
 
-	line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), _b.sumReward_.String(), _b.sumFee_.String())
+	line = fmt.Sprintf("%v,%v,%v\n", lastDate.Local().Format("2006-01-02"), _b.sumReward_, _b.sumFee_)
 	if _, err = fReward.WriteString(line); err != nil {
 		log.Fatalln(err, line)
 	}
@@ -326,74 +314,35 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 
 func (_b *BalanceParser) processFee() {
 	for change := range _b.rewardFeeCh_ {
-		_b.sumReward_.Add(_b.sumReward_, change.fee)
-		_b.sumFee_.Add(_b.sumFee_, change.fee)
+		_b.sumReward_ += change.reward
+		_b.sumFee_ += change.fee
 	}
 }
 
 func (_b *BalanceParser) processBalance(_blockTime *time.Time) {
-	debugBalance := big.NewInt(0)
-	debugChange := big.NewInt(0)
-
-	defer func() {
-		if err := recover(); err != nil {
-			fmt.Println(err, debugBalance.String(), debugChange.String())
-		}
-	}()
-
-
 	for change := range _b.balanceChangeCh_ {
-		balance, ok := _b.balanceMap_[change.addr]
-		if !ok {
-			balance = big.NewInt(0)
-			_b.balanceMap_[change.addr] = balance
-		}
+		balance, _ := _b.balanceMap_[change.addr]
 
-		debugChange = change.change
-		debugBalance = balance
-
-		rich := big.NewInt(0)
-		rich.Mul(big.NewInt(ETH_UNIT), big.NewInt(10000))
-
-		if balance.Cmp(rich) >= 0 && change.change.Sign() < 0 && _blockTime != nil {
+		if balance >= 10000 && change.change < 0 && _blockTime != nil {
 			delta := time.Now().Sub(*_blockTime)
 			days := uint32(delta.Hours() / 24)
 			if days <= 720 {
 				_b.reduceNum_ += 1
-
-				_b.reduceSum_.Set(big.NewInt(0).Sub(_b.reduceSum_, change.change))
+				_b.reduceSum_ -= change.change
 
 				// crowd sale
 				if _, ok := _b.genesis_[change.addr]; ok {
 					_b.reduceNumICO_ += 1
-					_b.reduceSumICO_.Set(big.NewInt(0).Sub(_b.reduceSumICO_, change.change))
+					_b.reduceSumICO_ -= change.change
 				}
 			}
 		}
 
-		//// GOLANG BUG?
-		//if balance.Sign() < 0 && change.change.Sign() > 0 {
-		//	absBalance := big.NewInt(0).Abs(balance)
-		//	if absBalance.Cmp(change.change) > 0 {
-		//		balance.Neg(big.NewInt(0).Sub(absBalance, change.change))
-		//	} else {
-		//		b := big.NewInt(0)
-		//		b.Add(balance, change.change)
-		//		balance.Set(b)
-		//	}
-		//} else {
-		//	b := big.NewInt(0)
-		//	b.Add(balance, change.change)
-		//	balance.Set(b)
-		//}
-
-		newBalance := big.NewInt(0)
-		newBalance.Add(balance, change.change)
-
-		balance.Set(newBalance)
-
-		if balance.Sign() == 0 {
+		balance += change.change
+		if balance == 0 {
 			delete(_b.balanceMap_, change.addr)
+		} else {
+			_b.balanceMap_[change.addr] = balance
 		}
 	}
 
@@ -406,32 +355,32 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 	lastLogTime := new(time.Time)
 	for {
 		if block, ok := _b.blockMap_[_b.blockNO_]; ok {
-			reward := big.NewInt(0)
+			reward := 0.0
 			if _b.blockNO_ >= REDUCE_BLOCK_NO {
-				reward.SetUint64(3 * ETH_UNIT)
+				reward = 3
 			} else {
-				reward.SetUint64(5 * ETH_UNIT)
+				reward = 5
 			}
 
-			fee := big.NewInt(0)
+			fee := 0.0
 			for _, t := range block.Transactions {
-				txFee := big.NewInt(0)
-				txFee.Mul(&t.GasPrice, big.NewInt(int64(t.Gas)))
+				txFee := big.NewFloat(0).Quo(big.NewFloat(float64(t.Gas)), big.NewFloat(0).SetInt(&t.GasPrice))
+				fee, _ = txFee.Float64()
 
-				fee.Add(big.NewInt(0).Set(fee), txFee)
+				val := big.NewFloat(0).SetInt(&t.Value)
+				val.Quo(val, big.NewFloat(ETH_UNIT))
 
-				fromVal := big.NewInt(0).Add(&t.Value, txFee)
+				from, _ := big.NewFloat(0).Add(val, txFee).Float64()
+				to, _ := val.Float64()
 
-				_b.balanceChangeCh_ <- &tBalanceChange{t.From, fromVal.Neg(fromVal)}
+				_b.balanceChangeCh_ <- &tBalanceChange{t.From, -from}
 
-				_b.balanceChangeCh_ <- &tBalanceChange{t.To, &t.Value}
+				_b.balanceChangeCh_ <- &tBalanceChange{t.To, to}
 			}
 
 			_b.rewardFeeCh_ <- &tRewardFee{reward, fee}
 
-			blockVal := big.NewInt(0).Add(fee, reward)
-
-			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, blockVal}
+			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward}
 
 			blockTime := time.Unix(int64(block.Timestamp), 0)
 			if blockTime.Day() != lastLogTime.Day() && _b.blockNO_ > 1 {
@@ -442,15 +391,15 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 				if days := uint32(delta.Hours() / 24); days < 720 {
 					_b.saveDayReport(days)
 					_b.reduceNum_ = 0
-					_b.reduceSum_.SetUint64(0)
+					_b.reduceSum_ = 0
 					_b.reduceNumICO_ = 0
-					_b.reduceSumICO_.SetUint64(0)
+					_b.reduceSumICO_ = 0
 				}
 
 				if blockTime.Month() != lastLogTime.Month() {
 					_b.saveMonthReport(blockTime)
-					_b.sumFee_.SetUint64(0)
-					_b.sumReward_.SetUint64(0)
+					_b.sumFee_ = 0
+					_b.sumReward_ = 0
 				}
 
 				_b.balanceChangeCh_ = make(chan *tBalanceChange)

@@ -49,20 +49,42 @@ func TestBalanceParser_loadGenesisBigInt(t *testing.T) {
 
 }
 
-func recoverTest(){
+func recoverTest() {
 	throw()
 }
 
-func throw()  {
+func throw() {
 	panic("underflow")
 }
 
 func TestRecover(t *testing.T) {
-	defer func () {
+	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
 
 	recoverTest()
+}
+
+func TestUnderflow(t *testing.T) {
+
+	big1 := big.NewInt(-6470220429140951616)
+	big2, _ := big.NewInt(0).SetString("13605734051180781568", 10)
+
+	big3 := big.NewInt(0)
+	big3.Add(big1, big2)
+
+	t.Log(big3.String())
+
+	big1 = big.NewInt(-996414840377181072)
+	big2, _ = big.NewInt(0).SetString("3479865757200000000", 10)
+
+	big3 = big.NewInt(0)
+	big3.Add(big1, big2)
+
+	t.Log(big3.String())
+
+	//underflow - 6470220429140951616
+	//13605734051180781568
 }
