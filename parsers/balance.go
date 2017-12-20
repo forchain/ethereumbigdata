@@ -150,7 +150,7 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	wgBlock := new(sync.WaitGroup)
 	go _b.processBlock(wgBlock)
 
-	go _b.processBalance(nil)
+	go _b.processBalance()
 
 	go _b.processFee()
 	wg := new(sync.WaitGroup)
@@ -319,22 +319,19 @@ func (_b *BalanceParser) processFee() {
 	}
 }
 
-func (_b *BalanceParser) processBalance(_blockTime *time.Time) {
+func (_b *BalanceParser) processBalance() {
 	for change := range _b.balanceChangeCh_ {
 		balance, _ := _b.balanceMap_[change.addr]
 
-		if balance >= 10000 && change.change < 0 && _blockTime != nil {
-			delta := time.Now().Sub(*_blockTime)
-			days := uint32(delta.Hours() / 24)
-			if days <= 720 {
-				_b.reduceNum_ += 1
-				_b.reduceSum_ -= change.change
+		if balance >= 10000 && change.change < 0  {
+			_b.reduceNum_ += 1
+			_b.reduceSum_ -= change.change
 
-				// crowd sale
-				if _, ok := _b.genesis_[change.addr]; ok {
-					_b.reduceNumICO_ += 1
-					_b.reduceSumICO_ -= change.change
-				}
+			// crowd sale
+			addr := change.addr[2:]
+			if _, ok := _b.genesis_[addr]; ok {
+				_b.reduceNumICO_ += 1
+				_b.reduceSumICO_ -= change.change
 			}
 		}
 
@@ -364,11 +361,11 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 
 			fee := 0.0
 			for _, t := range block.Transactions {
-				txFee := big.NewFloat(0).Quo(big.NewFloat(float64(t.Gas)), big.NewFloat(0).SetInt(&t.GasPrice))
+				txFee := big.NewFloat(0).Mul(big.NewFloat(float64(t.Gas)), big.NewFloat(0).SetInt(&t.GasPrice))
+				txFee.Quo(big.NewFloat(0).Set(txFee), big.NewFloat(ETH_UNIT))
 				fee, _ = txFee.Float64()
 
-				val := big.NewFloat(0).SetInt(&t.Value)
-				val.Quo(val, big.NewFloat(ETH_UNIT))
+				val := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(&t.Value), big.NewFloat(ETH_UNIT))
 
 				from, _ := big.NewFloat(0).Add(val, txFee).Float64()
 				to, _ := val.Float64()
@@ -388,13 +385,12 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 				<-_b.balanceReadyCh_
 
 				delta := time.Now().Sub(blockTime)
-				if days := uint32(delta.Hours() / 24); days < 720 {
-					_b.saveDayReport(days)
-					_b.reduceNum_ = 0
-					_b.reduceSum_ = 0
-					_b.reduceNumICO_ = 0
-					_b.reduceSumICO_ = 0
-				}
+				days := uint32(delta.Hours() / 24)
+				_b.saveDayReport(days)
+				_b.reduceNum_ = 0
+				_b.reduceSum_ = 0
+				_b.reduceNumICO_ = 0
+				_b.reduceSumICO_ = 0
 
 				if blockTime.Month() != lastLogTime.Month() {
 					_b.saveMonthReport(blockTime)
@@ -403,7 +399,7 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 				}
 
 				_b.balanceChangeCh_ = make(chan *tBalanceChange)
-				go _b.processBalance(&blockTime)
+				go _b.processBalance()
 			}
 
 			lastLogTime = &blockTime
