@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"io/ioutil"
 	"encoding/json"
+	"sort"
 )
 
 const (
@@ -24,13 +25,19 @@ const (
 )
 
 type tBalanceChange struct {
-	addr   string
-	change float64
+	addr      string
+	change    float64
+	timestamp int
 }
 
 type tRewardFee struct {
 	reward float64
 	fee    float64
+}
+
+type tAccount struct {
+	balance   float64
+	timestamp int
 }
 
 type BalanceParser struct {
@@ -41,7 +48,7 @@ type BalanceParser struct {
 	fileNO_ int
 	outDir_ string
 
-	balanceMap_ map[string]float64
+	balanceMap_ map[string]tAccount
 
 	reduceNum_ uint32
 	reduceSum_ float64
@@ -94,7 +101,7 @@ func (_b *BalanceParser) loadGenesis() {
 		wei, _ := big.NewFloat(0).SetString(balance["wei"])
 		wei.Quo(wei, big.NewFloat(ETH_UNIT))
 		eth, _ := wei.Float64()
-		_b.balanceMap_["0x"+addr] = eth
+		_b.balanceMap_["0x"+addr] = tAccount{eth, 0}
 		sum += eth
 	}
 	// Genesis (60M Crowdsale+12M Other):	72,009,990.50 Ether
@@ -113,7 +120,7 @@ func (_b *BalanceParser) Init(_rpc string, _out string) {
 	_b.cpuNum_ = runtime.NumCPU()
 	_b.blockCh_ = make(chan *ethrpc.Block, _b.cpuNum_)
 	_b.blockMap_ = make(map[int]*ethrpc.Block)
-	_b.balanceMap_ = make(map[string]float64)
+	_b.balanceMap_ = make(map[string]tAccount)
 
 	_b.balanceChangeCh_ = make(chan *tBalanceChange, _b.cpuNum_)
 	_b.balanceReadyCh_ = make(chan bool)
@@ -144,6 +151,120 @@ func (_b *BalanceParser) Init(_rpc string, _out string) {
 	log.Println("[MAX]", _b.maxBlock_)
 }
 
+func (_b *BalanceParser) period() {
+	periodMap := make(map[int]float64)
+
+	for _, b := range _b.balanceMap_ {
+		if b.timestamp == 0 {
+			periodMap[-1] += b.balance
+		} else {
+			t := time.Unix(int64(b.timestamp), 0)
+			delta := time.Now().Sub(t)
+			hours := int(delta.Hours() / 24)
+			periodMap[hours] += b.balance
+		}
+	}
+
+	fileName := fmt.Sprintf("%v/period.csv", _b.outDir_)
+	f, err := os.OpenFile(fileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModeAppend|os.ModePerm)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	defer f.Close()
+
+	size := len(periodMap) - 1
+	for i := 0; i < size; i++ {
+		line := fmt.Sprintf("%v,%v\n", i, periodMap[i])
+		if _, err = f.WriteString(line); err != nil {
+			log.Fatalln(err, line)
+		} else {
+			log.Print(line)
+		}
+	}
+
+	line := fmt.Sprintf("%v,%v\n", size, periodMap[-1])
+	if _, err = f.WriteString(line); err != nil {
+		log.Fatalln(err, line)
+	} else {
+		log.Print(line)
+	}
+}
+
+func (_b *BalanceParser) hold() {
+	balanceList := make(lib.Float64Sorted, 0)
+	for _, v := range _b.balanceMap_ {
+		balanceList = append(balanceList, v.balance)
+	}
+	sort.Sort(balanceList)
+
+	divide := len(balanceList) / 1000
+	n := 0
+	sum := 0.0
+	divideSum := 0.0
+	sum1000, sum10000, sum100000 := 0.0, 0.0, 0.0
+	divideKeys := make([]int, 0)
+	divideVals := make([]float64, 0)
+	for k, v := range balanceList {
+		n = k + 1
+		sum += v
+		divideSum += v
+
+		if n == 1000 {
+			sum1000 = sum
+		} else if n == 10000 {
+			sum10000 = sum
+		} else if n == 100000 {
+			sum100000 = sum
+		}
+
+		if n%divide == 0 {
+			divideKeys = append(divideKeys, n)
+			divideVals = append(divideVals, divideSum)
+			divideSum = 0
+		}
+	}
+
+	fileName := fmt.Sprintf("%v/hold.csv", _b.outDir_)
+	f, err := os.OpenFile(fileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModeAppend|os.ModePerm)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	defer f.Close()
+
+	line := fmt.Sprintf("1000,%v,%v\n", sum1000, float64(sum1000)/float64(sum))
+	if _, err = f.WriteString(line); err != nil {
+		log.Fatalln(err, line)
+	} else {
+		log.Print(line)
+	}
+	line = fmt.Sprintf("10000,%v,%v\n", sum10000, float64(sum10000)/float64(sum))
+	if _, err = f.WriteString(line); err != nil {
+		log.Fatalln(err, line)
+	} else {
+		log.Print(line)
+	}
+	line = fmt.Sprintf("100000,%v,%v\n", sum100000, float64(sum100000)/float64(sum))
+	if _, err = f.WriteString(line); err != nil {
+		log.Fatalln(err, line)
+	} else {
+		log.Print(line)
+	}
+
+	for k, key := range divideKeys {
+		val := divideVals[k]
+		line = fmt.Sprintf("%v,%v,%v\n", key, val, float64(val)/float64(sum))
+		if _, err = f.WriteString(line); err != nil {
+			log.Fatalln(err, line)
+		} else {
+			log.Print(line)
+		}
+	}
+
+	log.Println("[HOLD]", fileName)
+}
+
 func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	_b.Init(_rpc, _out)
 
@@ -163,6 +284,9 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	}
 	wg.Wait()
 	wgBlock.Wait()
+
+	_b.hold()
+	_b.period()
 }
 
 type tSortedBalance []string
@@ -253,9 +377,9 @@ func (_b *BalanceParser) saveMonthReport(_blockTime time.Time) {
 	balanceNum := len(_b.balanceMap_)
 	balanceSum := 0.0
 	for _, v := range _b.balanceMap_ {
-		if v > 0 {
-			topList.Push(v)
-			balanceSum += v
+		if v.balance > 0 {
+			topList.Push(v.balance)
+			balanceSum += v.balance
 		} else {
 			balanceNum -= 1
 		}
@@ -321,9 +445,9 @@ func (_b *BalanceParser) processFee() {
 
 func (_b *BalanceParser) processBalance() {
 	for change := range _b.balanceChangeCh_ {
-		balance, _ := _b.balanceMap_[change.addr]
-
-		if balance >= 10000 && change.change < 0  {
+		account, _ := _b.balanceMap_[change.addr]
+		account.timestamp = change.timestamp
+		if account.balance >= 10000 && change.change < 0 {
 			_b.reduceNum_ += 1
 			_b.reduceSum_ -= change.change
 
@@ -335,11 +459,11 @@ func (_b *BalanceParser) processBalance() {
 			}
 		}
 
-		balance += change.change
-		if balance == 0 {
+		account.balance += change.change
+		if account.balance == 0 {
 			delete(_b.balanceMap_, change.addr)
 		} else {
-			_b.balanceMap_[change.addr] = balance
+			_b.balanceMap_[change.addr] = account
 		}
 	}
 
@@ -370,14 +494,14 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 				from, _ := big.NewFloat(0).Add(val, txFee).Float64()
 				to, _ := val.Float64()
 
-				_b.balanceChangeCh_ <- &tBalanceChange{t.From, -from}
+				_b.balanceChangeCh_ <- &tBalanceChange{t.From, -from, block.Timestamp}
 
-				_b.balanceChangeCh_ <- &tBalanceChange{t.To, to}
+				_b.balanceChangeCh_ <- &tBalanceChange{t.To, to, block.Timestamp}
 			}
 
 			_b.rewardFeeCh_ <- &tRewardFee{reward, fee}
 
-			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward}
+			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward, block.Timestamp}
 
 			blockTime := time.Unix(int64(block.Timestamp), 0)
 			if blockTime.Day() != lastLogTime.Day() && _b.blockNO_ > 1 {

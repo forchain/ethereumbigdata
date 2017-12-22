@@ -61,15 +61,15 @@ func (_t *TopList) Min() float64 {
 	return _t.heap_[0]
 }
 
-type float64Sorted []float64
+type Float64Sorted []float64
 
-func (h float64Sorted) Len() int           { return len(h) }
-func (h float64Sorted) Less(i, j int) bool { return h[i] > h[j] }
-func (h float64Sorted) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h Float64Sorted) Len() int           { return len(h) }
+func (h Float64Sorted) Less(i, j int) bool { return h[i] > h[j] }
+func (h Float64Sorted) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (_t *TopList) Sorted() []float64 {
 
-	list := make(float64Sorted, 0)
+	list := make(Float64Sorted, 0)
 
 	for _, v := range _t.heap_ {
 		list = append(list, v)
