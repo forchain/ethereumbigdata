@@ -285,6 +285,8 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	wg.Wait()
 	wgBlock.Wait()
 
+	<-_b.balanceReadyCh_
+
 	_b.hold()
 	_b.period()
 }
