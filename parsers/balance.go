@@ -269,6 +269,7 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 	_b.Init(_rpc, _out)
 
 	wgBlock := new(sync.WaitGroup)
+	wgBlock.Add(1)
 	go _b.processBlock(wgBlock)
 
 	go _b.processBalance()
@@ -283,6 +284,7 @@ func (_b *BalanceParser) Parse(_rpc string, _out string) {
 		}
 	}
 	wg.Wait()
+	close(_b.blockCh_)
 	wgBlock.Wait()
 
 	<-_b.balanceReadyCh_
@@ -542,4 +544,5 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 			_b.blockMap_[block.Number] = block
 		}
 	}
+	close(_b.balanceChangeCh_)
 }
