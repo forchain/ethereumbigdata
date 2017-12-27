@@ -40,6 +40,11 @@ type tAccount struct {
 	timestamp int
 }
 
+type tBlockInfo struct {
+	block  *ethrpc.Block
+	uncles []*ethrpc.Block
+}
+
 type BalanceParser struct {
 	rpc_ *ethrpc.EthRPC
 
@@ -60,8 +65,8 @@ type BalanceParser struct {
 	balanceReadyCh_  chan bool
 
 	cpuNum_   int
-	blockCh_  chan *ethrpc.Block
-	blockMap_ map[int]*ethrpc.Block
+	blockCh_  chan tBlockInfo
+	blockMap_ map[int]tBlockInfo
 
 	blockNO_     int
 	sumReward_   float64
@@ -79,7 +84,16 @@ func (_b *BalanceParser) loadBlock(_blockNO int, _wg *sync.WaitGroup) {
 		log.Fatalln("loadBlock EthGetBlockByNumber", err)
 	}
 
-	_b.blockCh_ <- block
+	uncles := make([]*ethrpc.Block, 0)
+	for k := range block.Uncles {
+		uncle, err := _b.rpc_.EthGetUncleByBlockNumberAndIndex(_blockNO, k)
+		if err != nil {
+			log.Fatalln("loadBlock EthGetUncleByBlockNumberAndIndex", err)
+		}
+		uncles = append(uncles, uncle)
+	}
+
+	_b.blockCh_ <- tBlockInfo{block, uncles}
 }
 
 type tGenesis map[string]map[string]string
@@ -111,15 +125,15 @@ func (_b *BalanceParser) loadGenesis() {
 func (_b *BalanceParser) Init(_rpc string, _out string) {
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 10000
 
-	_b.rpc_ = ethrpc.NewEthRPC("http://" + _rpc)
+	_b.rpc_ = ethrpc.NewEthRPC(_rpc)
 
 	_b.outDir_ = _out
 	os.RemoveAll(_out)
 	os.Mkdir(_out, os.ModePerm)
 
 	_b.cpuNum_ = runtime.NumCPU()
-	_b.blockCh_ = make(chan *ethrpc.Block, _b.cpuNum_)
-	_b.blockMap_ = make(map[int]*ethrpc.Block)
+	_b.blockCh_ = make(chan tBlockInfo, _b.cpuNum_)
+	_b.blockMap_ = make(map[int]tBlockInfo)
 	_b.balanceMap_ = make(map[string]tAccount)
 
 	_b.balanceChangeCh_ = make(chan *tBalanceChange, _b.cpuNum_)
@@ -479,12 +493,21 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 
 	lastLogTime := new(time.Time)
 	for {
-		if block, ok := _b.blockMap_[_b.blockNO_]; ok {
+		if info, ok := _b.blockMap_[_b.blockNO_]; ok {
+			block := info.block
 			reward := 0.0
 			if _b.blockNO_ >= REDUCE_BLOCK_NO {
 				reward = 3
 			} else {
 				reward = 5
+			}
+
+			uncleReward := 0.0
+			for _, uncle := range info.uncles {
+				r := float64(uncle.Number+8-block.Number) * reward / 8
+				_b.balanceChangeCh_ <- &tBalanceChange{uncle.Miner, r, block.Timestamp}
+
+				uncleReward += reward / 32
 			}
 
 			fee := 0.0
@@ -505,7 +528,7 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 
 			_b.rewardFeeCh_ <- &tRewardFee{reward, fee}
 
-			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward, block.Timestamp}
+			_b.balanceChangeCh_ <- &tBalanceChange{block.Miner, fee + reward + uncleReward, block.Timestamp}
 
 			blockTime := time.Unix(int64(block.Timestamp), 0)
 			if blockTime.Day() != lastLogTime.Day() && _b.blockNO_ > 1 {
@@ -536,12 +559,12 @@ func (_b *BalanceParser) processBlock(_wg *sync.WaitGroup) {
 
 			_b.blockNO_++
 		} else {
-			block, ok := <-_b.blockCh_
+			info, ok := <-_b.blockCh_
 			if !ok {
 				break
 			}
 
-			_b.blockMap_[block.Number] = block
+			_b.blockMap_[info.block.Number] = info
 		}
 	}
 	close(_b.balanceChangeCh_)
