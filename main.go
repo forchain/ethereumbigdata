@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/forchain/ethereumbigdata/parsers"
+	"github.com/Newtrong/ethereumbigdata/parsers"
 	"flag"
 )
 
